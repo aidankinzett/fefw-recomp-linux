@@ -84,6 +84,12 @@ const SECTIONS = [
       { id: 'prompt_style', type: 'select', label: 'Button prompts', sec: 'prompts', key: 'style', def: 'auto',
         options: [['auto', 'Automatic (last device used)'], ['switch', "Switch (the game's own)"], ['xbox', 'Xbox'], ['playstation', 'PlayStation'], ['keyboard', 'Keyboard and mouse']],
         hint: 'Keyboard: WASD move, arrows or IJKL camera, Enter or Space A, Esc or Backspace B, R X, F Y, Q L, E R, Z ZL, C ZR, Tab +, M -, 1-4 d-pad. F1 > Controls lists them; change them in [bindings.all] of controls.ini.' },
+      // The runtime already maps the face buttons by label or by position ([pad] label_abxy in controls.ini,
+      // pad_map.cpp): 1 keeps the printed labels, 0 follows the positions. The prompts follow the same key,
+      // so no extra rule is needed here.
+      { id: 'face_buttons', type: 'select', label: 'Face buttons', sec: 'pad', key: 'label_abxy', def: '1',
+        options: [['1', 'By label (Xbox A = Switch A)'], ['0', 'By position (bottom = Switch B)']],
+        hint: 'How the four face buttons are mapped. By label, the button printed A is the Switch A, as on an Xbox pad. By position, the bottom button is the Switch B, as on a Switch pad. The button icons follow the layout.' },
     ],
   },
   {
