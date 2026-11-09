@@ -19,6 +19,12 @@ const SECTIONS = [
       { id: 'render_ratio', type: 'select', label: 'Render scale', sec: 'fefw', key: 'render_ratio', def: '0',
         options: [['0', "Game's own (50%)"], ['0.5', '50%'], ['0.67', '67%'], ['0.75', '75%'], ['1.0', '100% (native, sharpest)']],
         hint: '3D render size per side, as a share of the output. The upscaler fills in the rest.' },
+      // The runtime turns [fefw] render_ratio into a DLSS quality tier on its own (temporal_dlss.cpp, kModes); this
+      // field writes the same key as Render scale so the two controls always agree.
+      { id: 'sr_tier', type: 'select', label: 'Upscaling tier', sec: 'fefw', key: 'render_ratio', def: '0',
+        options: [['0', "Game's own"], ['0.33', 'Ultra Performance'], ['0.5', 'Performance'], ['0.59', 'Balanced'],
+          ['0.67', 'Quality'], ['0.75', 'Ultra Quality'], ['0.85', 'High Quality'], ['1.0', 'DLAA']],
+        hint: 'The DLSS quality tier. Writes the same render_ratio key as Render scale: DLAA=100%, Ultra Quality=75%, Quality=67%, Balanced=59%, Performance=50%, Ultra Performance=33%.' },
       { id: 'upscaler', type: 'select', label: 'Upscaler', sec: 'dlss', key: 'upscaler', def: 'taau',
         options: [['taau', 'Built-in temporal (TAAU)'], ['dlss', 'NVIDIA DLSS (RTX; needs the Streamline files)'], ['fsr3', 'AMD FSR 3.1 (needs its DLLs)'], ['bilinear', 'Bilinear (no history)'], ['auto', 'Automatic (DLSS, else FSR 3, else TAAU)']],
         hint: "Stands in for the console's DLSS. TAAU needs no extra files. DLSS and FSR 3 need their DLLs, and a change applies at the next start." },
@@ -53,7 +59,8 @@ const SECTIONS = [
       { id: 'fps120', type: 'toggle', label: '120 fps gameplay', sec: 'fefw', key: 'fps120', def: '0', hint: 'Wins over 60 fps. Needs a fast CPU.' },
       { id: 'smooth_step', type: 'toggle', label: 'Exact game clock', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'Keeps game time exact when frame times vary. On by default with 120 fps.' },
       { id: 'frame_gen', type: 'select', label: 'Frame generation', sec: 'dlss', key: 'frame_gen', def: '0',
-        options: [['0', 'Off'], ['fsr3', 'AMD FSR 3 (needs amd_fidelityfx_vk.dll)']], hint: 'Keep vsync off with frame generation.' },
+        options: [['0', 'Off'], ['dlss', 'NVIDIA DLSS Frame Generation (RTX 40 series)'], ['fsr3', 'AMD FSR 3 (needs amd_fidelityfx_vk.dll)']],
+        hint: 'Keep vsync off with frame generation. DLSS frame generation also needs hardware GPU scheduling and an RTX 40 series or newer card.' },
       { id: 'frame_gen_dll', type: 'text', label: 'FSR 3 frame generation DLL', sec: 'dlss', key: 'frame_gen_dll', def: '', placeholder: 'path to amd_fidelityfx_vk.dll (FidelityFX SDK v1.1.4)' },
     ],
   },
