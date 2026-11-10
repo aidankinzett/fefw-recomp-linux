@@ -59,6 +59,9 @@ jobs:
       - name: Package (game-build/scripts/make-release-linux.sh)
         env:
           SHORT: ${{ steps.names.outputs.short }}
+          # the launcher follows this repository's releases, which are tagged by commit (update.rs REPO, BUILD_ID)
+          FEFW_UPDATE_REPO: ${{ github.repository }}
+          FEFW_BUILD_ID: ${{ steps.names.outputs.short }}
         run: |
           # the upstream Windows package stands in for this fork's own make-release.ps1 output (it has the runtime)
           gh release download "$BASE_RELEASE" -R "$BASE_REPO" -p '*-win64.zip' -D work/base
