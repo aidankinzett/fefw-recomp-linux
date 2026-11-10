@@ -1,0 +1,153 @@
+# Linux package for every commit on master: a GitHub release named after the short commit hash.
+#
+# The game runtime (fefw_rt.dll + fefw_rt.lib, built on Windows with clang-cl) is taken from an upstream release (BASE_RELEASE),
+# together with what links against it and must match it (tools/build/sdk, the lifter, dump_hashes.json). Everything the player's
+# Linux PC runs is built here from this commit: the launcher (AppImage), fefw_build.py, the shader extractor and translator
+# (linux-x64), plus Linux Zig and a relocatable CPython. No game code or data is in the package.
+name: Linux release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-release-${{ github.sha }}
+
+env:
+  BASE_REPO: Goldoire/fefw-recomp
+  BASE_RELEASE: v0.1.6
+  ZIG_VERSION: 0.17.0
+  ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+  PYTHON_MINOR: '3.13'
+  # the revision tools/shaders' translator is built against (launcher/src-tauri/src/setup.rs RYUBING_COMMIT)
+  RYUBING_GIT: https://git.ryujinx.app/ryubing/ryujinx.git
+  RYUBING_COMMIT: a82350bb774f70fcbd41c9987bf67a3775409963
+
+jobs:
+  package:
+    # the oldest supported runner: the AppImage and the Python wheels then run on older glibc too
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Names
+        id: names
+        run: |
+          short=$(git rev-parse --short=7 HEAD)
+          echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "pkg=fefw-recomp-$short" >> "$GITHUB_OUTPUT"
+
+      - name: System packages (Tauri, AppImage)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            build-essential file libfuse2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Launcher tests
+        working-directory: launcher/src-tauri
+        run: cargo test --release
+
+      - name: Launcher (AppImage)
+        working-directory: launcher
+        env:
+          NO_STRIP: 'true'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run tauri build -- --bundles appimage --config '{"bundle":{"active":true}}'
+          ls src-tauri/target/release/bundle/appimage/
+
+      - name: Shader translator (linux-x64)
+        run: |
+          src=work/refs/ryubing
+          git clone -q --filter=blob:none --no-checkout "$RYUBING_GIT" "$src"
+          git -C "$src" checkout -q "$RYUBING_COMMIT"
+          # what tools/shaders/scripts/setup_ryujinx.ps1 stages
+          dst=tools/shaders/third_party/ryubing
+          mkdir -p "$dst/src"
+          for p in Ryujinx.Common Spv.Generator Ryujinx.Graphics.Shader; do
+            rsync -a --delete --exclude obj --exclude bin "$src/src/$p/" "$dst/src/$p/"
+          done
+          for f in Directory.Build.props Directory.Packages.props global.json nuget.config LICENSE.txt; do cp "$src/$f" "$dst/$f"; done
+          dotnet publish tools/shaders/harness/SpirvHarness.csproj -c Release -r linux-x64 --self-contained true -o work/harness \
+            -p:DebugType=none -p:DebugSymbols=false -p:Deterministic=true "-p:PathMap=$PWD=."
+          work/harness/spirv_harness --help | head -1
+
+      - name: Package
+        env:
+          PKG: ${{ steps.names.outputs.pkg }}
+          SHORT: ${{ steps.names.outputs.short }}
+        run: |
+          set -euo pipefail
+          out=work/release; mkdir -p "$out/cache"; stage="$out/$PKG"
+
+          # --- the upstream Windows package: runtime, SDK, lifter, fonts, licences
+          gh release download "$BASE_RELEASE" -R "$BASE_REPO" -p '*-win64.zip' -D "$out/cache"
+          unzip -q "$out"/cache/*-win64.zip -d "$out/base"
+          mv "$out"/base/fefw-recomp-* "$stage"
+          rm -rf "$stage/fefw-launcher.exe" "$stage/tools/python" "$stage/tools/build/zig" "$stage/tools/spirv_harness"
+
+          # --- from this commit
+          cp launcher/src-tauri/target/release/bundle/appimage/*.AppImage "$stage/fefw-launcher.AppImage"
+          chmod +x "$stage/fefw-launcher.AppImage"
+          cp game-build/release/fefw_build.py "$stage/tools/build/fefw_build.py"
+          cp tools/shaders/ampere/extract_corpus.py "$stage/tools/shaders/extract_corpus.py"
+          cp -a work/harness "$stage/tools/spirv_harness"
+          cp locales/*.ini locales/README.md "$stage/locales/" 2>/dev/null || true
+          sed -e "s/@VERSION@/$SHORT/" -e "s/@BASE@/$BASE_RELEASE/" game-build/release/README-linux.txt > "$stage/README.txt"
+
+          # --- Zig, checked against ziglang.org's sha256
+          curl -fsSL -o "$out/cache/zig.tar.xz" "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  $out/cache/zig.tar.xz" | sha256sum -c
+          mkdir -p "$stage/tools/build/zig"
+          tar xf "$out/cache/zig.tar.xz" -C "$stage/tools/build/zig" --strip-components=1 --exclude='*/doc/*'
+
+          # --- relocatable CPython (python-build-standalone, install_only) + the lifter's packages
+          asset=$(gh release view -R astral-sh/python-build-standalone --json assets -q '.assets[].name' \
+            | grep -E "^cpython-${PYTHON_MINOR//./\\.}\.[0-9]+\+[0-9]+-x86_64-unknown-linux-gnu-install_only\.tar\.gz$" | sort -V | tail -1)
+          echo "python: $asset"
+          gh release download -R astral-sh/python-build-standalone -p "$asset" -D "$out/cache"
+          tar xf "$out/cache/$asset" -C "$stage/tools"     # unpacks as python/
+          "$stage/tools/python/bin/python3" -m pip install --no-cache-dir --disable-pip-version-check capstone==5.0.9 lz4 zbic zstandard
+          "$stage/tools/python/bin/python3" -I -c "import zbic, lz4, capstone, zstandard"
+          find "$stage/tools/python" -name __pycache__ -prune -exec rm -rf {} +
+          cp "$stage/tools/python/lib/python${PYTHON_MINOR}/LICENSE.txt" "$stage/licenses/LICENSE.Python.PSF.txt" 2>/dev/null || true
+
+          # --- never ship anything from a game dump, saves or keys
+          bad=$(find "$stage" \( -iname '*.nso' -o -iname '*.nca' -o -iname '*.nsp' -o -iname '*.xci' -o -iname '*.nup' -o -iname '*.keys' \
+                 -o -iname '*.spv' -o -name fefw.exe -o -name fefw.ini -o -name controls.ini -o -name exefs -o -name romfs \
+                 -o -name shader_cache -o -name save \) -print)
+          if [ -n "$bad" ]; then echo "game-derived or private files in the package:"; echo "$bad"; exit 1; fi
+
+          tar -C "$out" -czf "$out/$PKG-linux-x64.tar.gz" "$PKG"
+          ls -la "$out/$PKG-linux-x64.tar.gz"
+
+      - name: Release
+        env:
+          PKG: ${{ steps.names.outputs.pkg }}
+          SHORT: ${{ steps.names.outputs.short }}
+        run: |
+          file="work/release/$PKG-linux-x64.tar.gz"
+          notes=$(printf 'Linux package built from %s (%s).\n\nRuntime (fefw_rt.dll) from upstream %s. Extract, run fefw-launcher.AppImage, Set up, Play. See README.txt.' \
+            "$GITHUB_SHA" "$(git log -1 --format=%s)" "$BASE_RELEASE")
+          if gh release view "$SHORT" >/dev/null 2>&1; then
+            gh release upload "$SHORT" "$file" --clobber
+          else
+            gh release create "$SHORT" "$file" --target "$GITHUB_SHA" --title "$SHORT" --notes "$notes"
+          fi
