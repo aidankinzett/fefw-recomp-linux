@@ -1,5 +1,6 @@
 import { api, esc, icon, refreshIcons, toast, errText } from '../util.js';
 import { t, getLang, listLangs, setLang } from '../i18n.js';
+import { fileDetail } from '../rusttext.js';
 
 /*
  * Settings schema. Every key is described in runtime/docs/CONFIG.md.
@@ -102,6 +103,15 @@ const SECTIONS = [
       { id: 'face_buttons', type: 'select', label: 'settings.faceButtons.label', sec: 'pad', key: 'label_abxy', def: '1',
         options: [['1', 'settings.faceButtons.label_'], ['0', 'settings.faceButtons.position']],
         hint: 'settings.faceButtons.hint' },
+      // [pad] haptic: how the game's HD Rumble value reaches the pad (runtime/gfx/haptic.cpp). The launcher only writes the
+      // setting; the game reads it when it starts, so a change lands on the next run.
+      { id: 'haptic', type: 'select', label: 'settings.haptic.label', sec: 'pad', key: 'haptic', def: 'auto',
+        options: [['auto', 'settings.haptic.auto'], ['off', 'settings.haptic.off'], ['rumble', 'settings.haptic.rumble'],
+          ['dualsense', 'settings.haptic.dualsense']],
+        hint: 'settings.haptic.hint' },
+      // [pad] haptic_strength: 0..100 percent for the haptic backends, or -1 to keep using the rumble strength above.
+      { id: 'haptic_strength', type: 'number', label: 'settings.hapticStrength.label', sec: 'pad', key: 'haptic_strength',
+        def: '-1', min: -1, max: 100, hint: 'settings.hapticStrength.hint' },
     ],
   },
   {
@@ -304,7 +314,7 @@ export async function render(el, ctx) {
     const seq = ++checkSeq;
     const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || '') }).catch(() => null);
     if (seq !== checkSeq || !r) return;
-    const line = (name, x) => `${t(name)}: ${x.found ? t('settings.files.found', { detail: x.detail }) : t('settings.files.notFound', { detail: x.detail })}`;
+    const line = (name, x) => `${t(name)}: ${x.found ? t('settings.files.found', { detail: x.detail }) : t('settings.files.notFound', { detail: fileDetail(x.detail) })}`;
     const put = (which, text) => el.querySelectorAll(`[data-status="${which}"]`).forEach((n) => { n.textContent = text; });
     put('fsr', `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
     put('dlss', `${line('settings.files.dlss', r.dlss)}. ${line('settings.files.dlssFrameGen', r.dlss_framegen)}.`);
