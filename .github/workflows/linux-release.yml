@@ -1,37 +1,125 @@
-# Linux package of the version in launcher/src-tauri/tauri.conf.json, added to this repository's release v<version>.
+# The Windows and Linux packages of the version in launcher/src-tauri/tauri.conf.json, published as this repository's release
+# v<version>. Run by hand (Actions, or gh workflow run linux-release.yml): a push does not replace the packages of a published version.
 #
-# game-build/scripts/make-release-linux.sh does the packaging. Its input, the Windows package with the runtime (fefw_rt.dll + .lib,
-# built on Windows with clang-cl by game-build/scripts/make-release.ps1), has to be on that release already:
-#   gh release create v<version> work/release/fefw-recomp-<version>-win64.zip --title <version> --latest=false
-# Everything else the player's Linux PC runs is built from this commit. Run by hand (Actions, or gh workflow run): a push does not
-# replace the package of a published version.
-name: Linux release
+#   windows   builds the runtime (fefw_rt.dll + .lib, clang-cl) and packs fefw-recomp-<version>-win64.zip
+#             (game-build/scripts/build_fefw.ps1, make-release.ps1)
+#   linux     makes fefw-recomp-<version>-linux-x64.tar.gz from that zip (game-build/scripts/make-release-linux.sh), then publishes
+#             both: added to the release when it exists (same names are replaced), else a new release at this commit
+#
+# With publish off the packages are only kept as artifacts of the run.
+name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the packages as release v<version> (off: artifacts of this run only)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: linux-release
+  group: release
+
+env:
+  # the launcher follows this repository's releases, which are tagged v<version> (update.rs REPO)
+  FEFW_UPDATE_REPO: ${{ github.repository }}
 
 jobs:
-  package:
-    # the oldest supported runner: the AppImage and the Python wheels then run on older glibc too
-    runs-on: ubuntu-22.04
+  windows:
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.names.outputs.version }}
     env:
-      GH_TOKEN: ${{ github.token }}
+      # docs/BUILDING.md: LLVM 23 or newer. The runner's own LLVM is older, so this one is unpacked into work\toolchain.
+      LLVM_VERSION: 23.1.5
+      LLVM_SHA256: b2be33385ddc86e83511417a060de927ae8b09d1f3017cc3cdce5c73cd5029d7
+      NX_JOBS: 4
     steps:
       - uses: actions/checkout@v4
 
       - name: Names
         id: names
         run: |
-          version=$(jq -r .version launcher/src-tauri/tauri.conf.json)
-          [ -n "$version" ] && [ "$version" != null ]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          $version = (Get-Content -Raw launcher\src-tauri\tauri.conf.json | ConvertFrom-Json).version
+          if (-not $version) { throw 'no version in tauri.conf.json' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: LLVM cache
+        id: llvm
+        uses: actions/cache@v4
+        with:
+          path: work/toolchain/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc
+
+      - name: LLVM ${{ env.LLVM_VERSION }} (clang-cl)
+        if: steps.llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p work/toolchain/llvm
+          cd work/toolchain
+          curl -fsSL -o llvm.tar.zst "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/clang%2Bllvm-$LLVM_VERSION-x86_64-pc-windows-msvc.tar.zst"
+          echo "$LLVM_SHA256  llvm.tar.zst" | sha256sum -c --quiet
+          # the programs and clang's own headers; the static libraries (most of the archive) are not needed
+          zstd -dc --long=31 llvm.tar.zst | tar -xf - -C llvm --strip-components=1 --wildcards '*/bin/*' '*/lib/clang/*'
+          rm llvm.tar.zst
+
+      - name: Toolchain paths
+        run: |
+          $bin = (Resolve-Path work\toolchain\llvm\bin).Path
+          & "$bin\clang-cl.exe" --version
+          "NX_LLVM_BIN=$bin" >> $env:GITHUB_ENV
+
+      - name: Texture transcoder sources
+        run: pwsh -File tools\textures\scripts\fetch_third_party.ps1
+
+      - name: Runtime (fefw_rt.dll)
+        run: pwsh -File game-build\scripts\build_fefw.ps1 -Target fefw_rt -BuildDir build\rtdll -CMakeArgs "-DFEFW_RT_DLL=ON"
+
+      - name: Shader translator sources (Ryujinx, pinned)
+        run: |
+          # keep the revision with make-release-linux.sh (RYUBING_COMMIT) and launcher/src-tauri/src/setup.rs
+          git clone -q --filter=blob:none --no-checkout https://git.ryujinx.app/ryubing/ryujinx.git work\refs\ryubing
+          git -C work\refs\ryubing checkout -q a82350bb774f70fcbd41c9987bf67a3775409963
+          if ($LASTEXITCODE) { throw 'cannot check out the Ryujinx revision' }
+          pwsh -File tools\shaders\scripts\setup_ryujinx.ps1 -Ryubing work\refs\ryubing
+
+      - name: Package (game-build/scripts/make-release.ps1)
+        run: pwsh -File game-build\scripts\make-release.ps1 -Version ${{ steps.names.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win64
+          path: work/release/fefw-recomp-${{ steps.names.outputs.version }}-win64.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  linux:
+    needs: windows
+    # the oldest supported runner: the AppImage and the Python wheels then run on older glibc too
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.windows.outputs.version }}
+      TAG: v${{ needs.windows.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: System packages (Tauri, AppImage)
         run: |
@@ -54,20 +142,30 @@ jobs:
         working-directory: launcher/src-tauri
         run: cargo test --release
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: win64
+          path: work/base
+
       - name: Package (game-build/scripts/make-release-linux.sh)
-        env:
-          VERSION: ${{ steps.names.outputs.version }}
-          TAG: ${{ steps.names.outputs.tag }}
-          # the launcher follows this repository's releases, which are tagged v<version> (update.rs REPO)
-          FEFW_UPDATE_REPO: ${{ github.repository }}
-        run: |
-          gh release download "$TAG" -p "fefw-recomp-$VERSION-win64.zip" -D work/base
-          game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
+        run: game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: work/release/fefw-recomp-${{ needs.windows.outputs.version }}-linux-x64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
 
       - name: Release
-        env:
-          VERSION: ${{ steps.names.outputs.version }}
-          TAG: ${{ steps.names.outputs.tag }}
+        if: inputs.publish
         run: |
-          gh release upload "$TAG" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz" --clobber
+          files=("work/base/fefw-recomp-$VERSION-win64.zip" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            notes=$(printf 'Version %s, built from %s.\n\n- **Linux and Steam Deck:** `fefw-recomp-%s-linux-x64.tar.gz`. Extract, run `fefw-launcher.AppImage`, Set up, Play.\n- **Windows:** `fefw-recomp-%s-win64.zip`. Extract, run `fefw-launcher.exe`.\n\nSee README.txt in the package.' \
+              "$VERSION" "$GITHUB_SHA" "$VERSION" "$VERSION")
+            gh release create "$TAG" "${files[@]}" --target "$GITHUB_SHA" --title "$VERSION" --latest=false --notes "$notes"
+          fi
           gh release edit "$TAG" --draft=false --latest
