@@ -1,24 +1,20 @@
-# Linux package for every commit on master: a GitHub release named after the short commit hash.
+# Linux package of the version in launcher/src-tauri/tauri.conf.json, added to this repository's release v<version>.
 #
 # game-build/scripts/make-release-linux.sh does the packaging. Its input, the Windows package with the runtime (fefw_rt.dll + .lib,
-# built on Windows with clang-cl), is the upstream release BASE_RELEASE here; everything the player's Linux PC runs is built from
-# this commit.
+# built on Windows with clang-cl by game-build/scripts/make-release.ps1), has to be on that release already:
+#   gh release create v<version> work/release/fefw-recomp-<version>-win64.zip --title <version> --latest=false
+# Everything else the player's Linux PC runs is built from this commit. Run by hand (Actions, or gh workflow run): a push does not
+# replace the package of a published version.
 name: Linux release
 
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: linux-release-${{ github.sha }}
-
-env:
-  BASE_REPO: Goldoire/fefw-recomp
-  BASE_RELEASE: v0.1.7
+  group: linux-release
 
 jobs:
   package:
@@ -32,8 +28,10 @@ jobs:
       - name: Names
         id: names
         run: |
-          short=$(git rev-parse --short=7 HEAD)
-          echo "short=$short" >> "$GITHUB_OUTPUT"
+          version=$(jq -r .version launcher/src-tauri/tauri.conf.json)
+          [ -n "$version" ] && [ "$version" != null ]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: System packages (Tauri, AppImage)
         run: |
@@ -58,24 +56,18 @@ jobs:
 
       - name: Package (game-build/scripts/make-release-linux.sh)
         env:
-          SHORT: ${{ steps.names.outputs.short }}
-          # the launcher follows this repository's releases, which are tagged by commit (update.rs REPO, BUILD_ID)
+          VERSION: ${{ steps.names.outputs.version }}
+          TAG: ${{ steps.names.outputs.tag }}
+          # the launcher follows this repository's releases, which are tagged v<version> (update.rs REPO)
           FEFW_UPDATE_REPO: ${{ github.repository }}
-          FEFW_BUILD_ID: ${{ steps.names.outputs.short }}
         run: |
-          # the upstream Windows package stands in for this fork's own make-release.ps1 output (it has the runtime)
-          gh release download "$BASE_RELEASE" -R "$BASE_REPO" -p '*-win64.zip' -D work/base
-          game-build/scripts/make-release-linux.sh work/base/*-win64.zip --version "$SHORT"
+          gh release download "$TAG" -p "fefw-recomp-$VERSION-win64.zip" -D work/base
+          game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
 
       - name: Release
         env:
-          SHORT: ${{ steps.names.outputs.short }}
+          VERSION: ${{ steps.names.outputs.version }}
+          TAG: ${{ steps.names.outputs.tag }}
         run: |
-          file="work/release/fefw-recomp-$SHORT-linux-x64.tar.gz"
-          notes=$(printf 'Linux package built from %s (%s).\n\nRuntime (fefw_rt.dll) from upstream %s. Extract, run fefw-launcher.AppImage, Set up, Play. See README.txt.' \
-            "$GITHUB_SHA" "$(git log -1 --format=%s)" "$BASE_RELEASE")
-          if gh release view "$SHORT" >/dev/null 2>&1; then
-            gh release upload "$SHORT" "$file" --clobber
-          else
-            gh release create "$SHORT" "$file" --target "$GITHUB_SHA" --title "$SHORT" --notes "$notes"
-          fi
+          gh release upload "$TAG" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz" --clobber
+          gh release edit "$TAG" --draft=false --latest
