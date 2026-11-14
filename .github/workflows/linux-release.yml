@@ -77,7 +77,7 @@ jobs:
           curl -fsSL -o llvm.tar.zst "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/clang%2Bllvm-$LLVM_VERSION-x86_64-pc-windows-msvc.tar.zst"
           echo "$LLVM_SHA256  llvm.tar.zst" | sha256sum -c --quiet
           # the programs and clang's own headers; the static libraries (most of the archive) are not needed
-          zstd -dc llvm.tar.zst | tar -xf - -C llvm --strip-components=1 --wildcards '*/bin/*' '*/lib/clang/*'
+          zstd -dc --long=31 llvm.tar.zst | tar -xf - -C llvm --strip-components=1 --wildcards '*/bin/*' '*/lib/clang/*'
           rm llvm.tar.zst
 
       - name: Toolchain paths
